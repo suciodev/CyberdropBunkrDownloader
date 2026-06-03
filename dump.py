@@ -126,8 +126,15 @@ def get_real_download_url(session, url, is_bunkr=True, item_name=None):
         # Extract file ID and filename from the file page
         file_path = None
         original_filename = extract_bunkr_filename(r.text)
+        cdn_url = extract_bunkr_cdn_url(r.text)
         
         print(f"\t\t[DEBUG] Extracted filename: '{original_filename}'")
+        print(f"\t\t[DEBUG] Extracted cdn url: '{cdn_url}'")
+
+        if cdn_url:
+            sign_url = get_signed_download_url(session, cdn_url, r.url)
+            if sign_url:
+                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename or get_url_data(cdn_url)['file_name'])}
         
         if original_filename:
             # Construct the file path for the sign API
@@ -201,6 +208,17 @@ def extract_bunkr_filename(html):
 
     return None
 
+def extract_bunkr_cdn_url(html):
+    match = re.search(r'var\s+jsCDN\s*=\s*"([^"]+)"', html)
+    if match:
+        return decode_bunkr_js_string(match.group(1))
+
+    match = re.search(r'https://[^"\']+\.cdn\.cr/storage/media/[^"\']+', html)
+    if match:
+        return decode_bunkr_js_string(match.group(0))
+
+    return None
+
 def clean_bunkr_filename(value):
     if not value:
         return None
@@ -216,6 +234,9 @@ def clean_bunkr_filename(value):
         return None
 
     return filename
+
+def decode_bunkr_js_string(value):
+    return json.loads(f'"{value}"')
         
 @retry(retry=retry_if_exception_type(requests.exceptions.ConnectionError), wait=wait_fixed(2), stop=stop_after_attempt(MAX_RETRIES))
 def download(session, item_url, download_path, is_bunkr=False, file_name=None):
@@ -313,15 +334,22 @@ def remove_illegal_chars(string):
 def get_signed_download_url(session, file_path, file_page_url):
     """
     Get a signed CDN download URL using the /sign API endpoint.
-    file_path should be like "storage/media/filename.mp4"
+    file_path can be a full CDN URL or a path like "storage/media/filename.mp4"
     """
     try:
-        payload = {'path': f'/{file_path}'}
+        if re.match(r'^https?://', file_path):
+            parsed_url = urlparse(file_path)
+            base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+            signed_path = unquote(parsed_url.path)
+        else:
+            signed_path = f"/{file_path.lstrip('/')}"
+            base_url = f"https://glb-cdn.cdn.cr{signed_path}"
+
         headers = {
             'Origin': 'https://bunkr.cr',
             'Referer': file_page_url
         }
-        r = session.post(BUNKR_SIGN_API_URL, json=payload, headers=headers, timeout=10)
+        r = session.get(BUNKR_SIGN_API_URL, params={'path': signed_path}, headers=headers, timeout=10)
         if r.status_code != 200:
             print(f"\t\t[-] HTTP ERROR {r.status_code} getting signed URL")
             return None
@@ -332,7 +360,7 @@ def get_signed_download_url(session, file_path, file_page_url):
         
         if ex and token:
             # Construct the signed CDN URL
-            signed_url = f"https://glb-cdn.cdn.cr/{file_path}?ex={ex}&token={token}"
+            signed_url = f"{base_url}?ex={ex}&token={token}"
             return signed_url
         else:
             print(f"\t\t[-] Invalid response from sign API: {r.text[:200]}")

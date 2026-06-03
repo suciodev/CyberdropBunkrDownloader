@@ -1,6 +1,6 @@
 import unittest
 
-from dump import extract_bunkr_filename
+from dump import extract_bunkr_cdn_url, extract_bunkr_filename
 
 
 class BunkrFilenameExtractionTests(unittest.TestCase):
@@ -42,6 +42,23 @@ class BunkrFilenameExtractionTests(unittest.TestCase):
         """
 
         self.assertIsNone(extract_bunkr_filename(html))
+
+    def test_extracts_cdn_url_from_current_inline_script(self):
+        html = r"""
+        <html>
+          <body>
+            <script type="text/javascript">
+              var jsCDN = "https:\/\/c5bu-b.cdn.cr\/storage\/media\/My-movie-6_23-L1cLsIGS.mp4";
+              var signUrl = "https://glb-apisign.cdn.cr/sign";
+            </script>
+          </body>
+        </html>
+        """
+
+        self.assertEqual(
+            extract_bunkr_cdn_url(html),
+            "https://c5bu-b.cdn.cr/storage/media/My-movie-6_23-L1cLsIGS.mp4",
+        )
 
 
 if __name__ == "__main__":
