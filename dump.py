@@ -124,56 +124,26 @@ def get_real_download_url(session, url, is_bunkr=True, item_name=None):
            
     if is_bunkr:
         # Extract file ID and filename from the file page
-        soup = BeautifulSoup(r.content, 'html.parser')
-        
         file_path = None
-        original_filename = None
-        
-        # Find the theItem div first, then extract filename from within it
-        the_item = soup.find('div', class_='theItem')
-        if the_item:
-            # Try title attribute first
-            if the_item.get('title'):
-                original_filename = the_item['title']
-            
-            # Or look for theName p tag within this div only
-            if not original_filename:
-                theme_name = the_item.find('p', class_='theName')
-                if theme_name:
-                    original_filename = theme_name.get_text(strip=True)
-            
-            # Or try hidden p tag within theItem
-            if not original_filename:
-                hidden_p = the_item.find('p', style=re.compile(r'display:\s*none'))
-                if hidden_p:
-                    original_filename = hidden_p.get_text(strip=True)
-        
-        # Fallback: Try thumbnail extraction
-        if not original_filename and the_item:
-            thumb_img = the_item.find('img', class_='grid-images_box-img')
-            if thumb_img and thumb_img.get('src'):
-                m_thumb = re.search(r'/thumbs/([^"]+)\.png', thumb_img['src'])
-                if m_thumb:
-                    thumb_base = m_thumb.group(1)
-                    original_filename = f"{thumb_base}.mp4"
+        original_filename = extract_bunkr_filename(r.text)
         
         print(f"\t\t[DEBUG] Extracted filename: '{original_filename}'")
         
-        if original_filename and original_filename not in ('v-2.3.11', '', 'version'):
+        if original_filename:
             # Construct the file path for the sign API
             file_path = f"storage/media/{original_filename.replace(' ', '-')}"
             print(f"\t\t[DEBUG] Trying file_path: {file_path}")
             # Try with the actual filename format
             sign_url = get_signed_download_url(session, file_path, r.url)
             if sign_url:
-                return {'url': sign_url, 'size': -1, 'name': item_name}
+                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename)}
             
             # If that fails, try alternate path format (with spaces)
             file_path = f"storage/media/{original_filename}"
             print(f"\t\t[DEBUG] Trying file_path (alt): {file_path}")
             sign_url = get_signed_download_url(session, file_path, r.url)
             if sign_url:
-                return {'url': sign_url, 'size': -1, 'name': item_name}
+                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename)}
         
         # Fallback: try legacy encryption method
         m_id2 = re.search(r'href="/f/([A-Za-z0-9_-]+)"', r.text)
@@ -188,6 +158,64 @@ def get_real_download_url(session, url, is_bunkr=True, item_name=None):
     else:
         item_data = json.loads(r.content)
         return {'url': item_data['url'], 'size': -1, 'name': item_data['name']}
+
+def extract_bunkr_filename(html):
+    soup = BeautifulSoup(html, 'html.parser')
+
+    candidates = []
+
+    the_item = soup.find('div', class_='theItem')
+    if the_item:
+        candidates.append(the_item.get('title'))
+
+        the_name = the_item.find('p', class_='theName')
+        if the_name:
+            candidates.append(the_name.get_text(strip=True))
+
+        hidden_p = the_item.find('p', style=re.compile(r'display:\s*none'))
+        if hidden_p:
+            candidates.append(hidden_p.get_text(strip=True))
+
+        thumb_img = the_item.find('img', class_='grid-images_box-img')
+        if thumb_img and thumb_img.get('src'):
+            match = re.search(r'/thumbs/([^"/]+)\.png', thumb_img['src'])
+            if match:
+                candidates.append(f"{match.group(1)}.mp4")
+
+    heading = soup.find('h1')
+    if heading:
+        candidates.append(heading.get_text(strip=True))
+
+    og_title = soup.find('meta', property='og:title')
+    if og_title:
+        candidates.append(og_title.get('content'))
+
+    title = soup.find('title')
+    if title:
+        candidates.append(re.sub(r'\s*\|\s*Bunkr\s*$', '', title.get_text(strip=True)))
+
+    for candidate in candidates:
+        filename = clean_bunkr_filename(candidate)
+        if filename:
+            return filename
+
+    return None
+
+def clean_bunkr_filename(value):
+    if not value:
+        return None
+
+    filename = unquote(value).strip()
+    if not filename or re.fullmatch(r'v?\d+(?:\.\d+){1,3}', filename, flags=re.IGNORECASE):
+        return None
+
+    if filename.lower() in ('bunkr', 'version'):
+        return None
+
+    if not os.path.splitext(filename)[1]:
+        return None
+
+    return filename
         
 @retry(retry=retry_if_exception_type(requests.exceptions.ConnectionError), wait=wait_fixed(2), stop=stop_after_attempt(MAX_RETRIES))
 def download(session, item_url, download_path, is_bunkr=False, file_name=None):
