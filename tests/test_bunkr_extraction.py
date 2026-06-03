@@ -1,6 +1,6 @@
 import unittest
 
-from dump import extract_bunkr_cdn_url, extract_bunkr_filename
+from dump import extract_bunkr_cdn_url, extract_bunkr_filename, get_download_tracking_value
 
 
 class BunkrFilenameExtractionTests(unittest.TestCase):
@@ -58,6 +58,25 @@ class BunkrFilenameExtractionTests(unittest.TestCase):
         self.assertEqual(
             extract_bunkr_cdn_url(html),
             "https://c5bu-b.cdn.cr/storage/media/My-movie-6_23-L1cLsIGS.mp4",
+        )
+
+    def test_uses_stable_download_key_for_dedupe(self):
+        item = {
+            "url": "https://c5bu-b.cdn.cr/storage/media/My-movie-6_23-L1cLsIGS.mp4?ex=111&token=aaa",
+            "download_key": "https://bunkr.cr/f/BEnwwXeFncR4b",
+        }
+
+        self.assertEqual(
+            get_download_tracking_value(item),
+            "https://bunkr.cr/f/BEnwwXeFncR4b",
+        )
+
+    def test_falls_back_to_url_when_no_download_key_exists(self):
+        item = {"url": "https://example.com/file.mp4"}
+
+        self.assertEqual(
+            get_download_tracking_value(item),
+            "https://example.com/file.mp4",
         )
 
 

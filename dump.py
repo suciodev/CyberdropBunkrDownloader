@@ -78,17 +78,18 @@ def get_items_list(session, url, extensions, only_export, custom_path=None, is_l
 
     for item in items:
         if not direct_link:
-            item = get_real_download_url(session, item['url'], is_bunkr, item['name'])
+            item = get_real_download_url(session, item['url'], is_bunkr, item['name'], item['url'])
             if item is None:
                 print(f"\t\t[-] Unable to find a download link")
                 continue
 
+        download_tracking_value = get_download_tracking_value(item)
         extension = get_url_data(item['url'])['extension']
-        if ((extension in extensions_list or len(extensions_list) == 0) and (item['url'] not in already_downloaded_url)):
+        if ((extension in extensions_list or len(extensions_list) == 0) and (download_tracking_value not in already_downloaded_url)):
             if only_export:
                 write_url_to_list(item['url'], download_path)
             else:
-                download(session, item['url'], download_path, is_bunkr, item['name'])
+                download(session, item['url'], download_path, is_bunkr, item['name'], download_tracking_value)
         
     pagination = soup.find('nav', {'class': 'pagination'})
     if pagination is not None:
@@ -110,7 +111,7 @@ def get_items_list(session, url, extensions, only_export, custom_path=None, is_l
         print(f"\t[+] File list exported in {os.path.join(download_path, 'url_list.txt')}" if only_export else f"\t[+] Download completed")
     return
     
-def get_real_download_url(session, url, is_bunkr=True, item_name=None):
+def get_real_download_url(session, url, is_bunkr=True, item_name=None, download_key=None):
 
     if is_bunkr:
         url = url if 'https' in url else f'https://bunkr.cr{url}'
@@ -134,7 +135,7 @@ def get_real_download_url(session, url, is_bunkr=True, item_name=None):
         if cdn_url:
             sign_url = get_signed_download_url(session, cdn_url, r.url)
             if sign_url:
-                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename or get_url_data(cdn_url)['file_name'])}
+                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename or get_url_data(cdn_url)['file_name']), 'download_key': download_key or url}
         
         if original_filename:
             # Construct the file path for the sign API
@@ -143,14 +144,14 @@ def get_real_download_url(session, url, is_bunkr=True, item_name=None):
             # Try with the actual filename format
             sign_url = get_signed_download_url(session, file_path, r.url)
             if sign_url:
-                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename)}
+                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename), 'download_key': download_key or url}
             
             # If that fails, try alternate path format (with spaces)
             file_path = f"storage/media/{original_filename}"
             print(f"\t\t[DEBUG] Trying file_path (alt): {file_path}")
             sign_url = get_signed_download_url(session, file_path, r.url)
             if sign_url:
-                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename)}
+                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename), 'download_key': download_key or url}
         
         # Fallback: try legacy encryption method
         m_id2 = re.search(r'href="/f/([A-Za-z0-9_-]+)"', r.text)
@@ -164,7 +165,7 @@ def get_real_download_url(session, url, is_bunkr=True, item_name=None):
         return None
     else:
         item_data = json.loads(r.content)
-        return {'url': item_data['url'], 'size': -1, 'name': item_data['name']}
+        return {'url': item_data['url'], 'size': -1, 'name': item_data['name'], 'download_key': download_key or url}
 
 def extract_bunkr_filename(html):
     soup = BeautifulSoup(html, 'html.parser')
@@ -237,9 +238,12 @@ def clean_bunkr_filename(value):
 
 def decode_bunkr_js_string(value):
     return json.loads(f'"{value}"')
+
+def get_download_tracking_value(item):
+    return item.get('download_key', item['url'])
         
 @retry(retry=retry_if_exception_type(requests.exceptions.ConnectionError), wait=wait_fixed(2), stop=stop_after_attempt(MAX_RETRIES))
-def download(session, item_url, download_path, is_bunkr=False, file_name=None):
+def download(session, item_url, download_path, is_bunkr=False, file_name=None, download_key=None):
 
     file_name = get_url_data(item_url)['file_name'] if file_name is None else file_name
     if os.path.exists(file_name):
@@ -270,7 +274,7 @@ def download(session, item_url, download_path, is_bunkr=False, file_name=None):
             print(f"\t[-] {file_name} size check failed, file could be broken\n")
             return
 
-    mark_as_downloaded(item_url, download_path)
+    mark_as_downloaded(download_key or item_url, download_path)
 
     return
 
