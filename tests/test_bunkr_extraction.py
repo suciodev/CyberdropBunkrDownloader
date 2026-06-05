@@ -1,6 +1,6 @@
 import unittest
 
-from dump import extract_bunkr_cdn_url, extract_bunkr_filename, get_download_tracking_value
+from cyberdrop.download import extract_bunkr_cdn_url, extract_bunkr_filename, get_download_tracking_value
 
 
 class BunkrFilenameExtractionTests(unittest.TestCase):

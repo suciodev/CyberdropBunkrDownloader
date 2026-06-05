@@ -132,3 +132,7 @@ dmypy.json
 
 # macOS dev
 .DS_Store
+
+# Personal config — use bookmarks.example.yml as the template
+bookmarks.yml
+cookies.txt

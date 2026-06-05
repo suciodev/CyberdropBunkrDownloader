@@ -1,14 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "cyberdropbunkrdownloader"
 version = "0.1.0"
-description = "Add your description here"
+description = "Download files from Bunkr and Cyberdrop albums"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "argparse>=1.4.0",
     "bs4>=0.0.2",
     "pyyaml>=6.0.3",
     "requests>=2.32.5",
     "tenacity>=9.1.2",
     "tqdm>=4.67.1",
 ]
+
+[project.scripts]
+cyberdrop = "cyberdrop.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["cyberdrop"]

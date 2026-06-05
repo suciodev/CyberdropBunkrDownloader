@@ -1,41 +1,42 @@
-uv run dump.py -u https://bunkr.cr/a/kRupjUVJ
+#!/usr/bin/env bash
+# Example commands — replace URLs and creator names with your own.
+
+# Download a single album
+uv run cyberdrop download -u https://bunkr.cr/a/kRupjUVJ
 
 # Download all bookmarks
-uv run download_bookmarks.py
+uv run cyberdrop bookmarks
 
-# Download specific creator
-uv run download_bookmarks.py -c Creator1
+# Download specific creator(s)
+uv run cyberdrop bookmarks -c Creator1
 
-# Skip already downloaded files
-uv run download_bookmarks.py --skip-downloaded
+# Skip already-downloaded files
+uv run cyberdrop bookmarks --skip-downloaded
 
 # Filter by file extensions
-uv run download_bookmarks.py -e jpg,png,mp4
+uv run cyberdrop bookmarks -e jpg,png,mp4
 
 # Custom output directory
-uv run download_bookmarks.py -o ./my_downloads
+uv run cyberdrop bookmarks -o ./my_downloads
 
 # Preview without updating bookmarks.yml
-uv run download_bookmarks.py --no-update
+uv run cyberdrop bookmarks --no-update
 
-uv run bulk_import.py -c "Creator2"
+# Import URLs for a creator (paste URLs, then press Ctrl+Z+Enter on Windows or Ctrl+D on Mac/Linux)
+uv run cyberdrop import -c "Creator2"
 # Paste: https://bunkr.cr/a/url1
 #        https://bunkr.cr/a/url2
 #        https://bunkr.cr/a/url3
-# → Creates 3 links as "Link 1", "Link 2", "Link 3"
+# → Adds 3 links as "Creator2 1", "Creator2 2", "Creator2 3"
 
-# bookmarks.yml has: consolidation_path: E:\Media\Creator2
-uv run download_bookmarks.py -c "Creator2" --consolidate
-# → Downloads all Creator2 albums, then moves all files to E:\Media\Creator2
+# Download creator and consolidate to consolidation_path from bookmarks.yml
+uv run cyberdrop bookmarks -c "Creator2" --consolidate
 
-uv run download_bookmarks.py --consolidate --skip-downloaded
-# → Just moves already-downloaded files to their consolidation paths
+# Move already-downloaded files to consolidation paths (no re-download)
+uv run cyberdrop consolidate
 
-# Download and consolidate 3 creators
-uv run download_bookmarks.py -c Creator1 Creator3 Creator2 --consolidate
+# Consolidate specific creators only
+uv run cyberdrop consolidate -c Creator1 Creator3
 
-# Case-insensitive (works too)
-uv run download_bookmarks.py -c Creator1 Creator3 Creator2 --consolidate
-
-# consolidate_only
-uv run consolidate_only.py -c Creator1 Creator3
+# Download and consolidate multiple creators
+uv run cyberdrop bookmarks -c Creator1 Creator2 Creator3 --consolidate
