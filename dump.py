@@ -7,7 +7,7 @@ import re
 import time
 from tenacity import retry, wait_fixed, retry_if_exception_type, stop_after_attempt
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from tqdm import tqdm
 from base64 import b64decode
 from math import floor
@@ -15,6 +15,7 @@ from urllib.parse import unquote
 from datetime import datetime
 
 BUNKR_VS_API_URL_FOR_SLUG = "https://bunkr.cr/api/vs"
+BUNKR_SIGN_API_URL = "https://glb-apisign.cdn.cr/sign"
 SECRET_KEY_BASE = "SECRET_KEY_"
 
 MAX_RETRIES=10
@@ -42,7 +43,17 @@ def get_items_list(session, url, extensions, only_export, custom_path=None, is_l
                 album_name = soup.find('h1', {'class': 'truncate'})
 
             album_name = remove_illegal_chars(album_name.text)
-            items.append(get_real_download_url(session, url, True))
+            # collect individual file links on album page instead of treating album as a single file
+            file_links = soup.find_all('a', href=re.compile(r'/f/'))
+            if file_links:
+                for a in file_links:
+                    href = a.get('href')
+                    full_url = urljoin(url, href)
+                    title = a.get('title') or (a.text.strip() if a.text else None)
+                    items.append({'url': full_url, 'size': -1, 'name': remove_illegal_chars(title) if title else None})
+            else:
+                # fallback: try resolving the album page as a single file
+                items.append(get_real_download_url(session, url, True))
         else:
             theItems = soup.find_all('div', {'class': 'theItem'})
             for theItem in theItems:
@@ -67,17 +78,18 @@ def get_items_list(session, url, extensions, only_export, custom_path=None, is_l
 
     for item in items:
         if not direct_link:
-            item = get_real_download_url(session, item['url'], is_bunkr, item['name'])
+            item = get_real_download_url(session, item['url'], is_bunkr, item['name'], item['url'])
             if item is None:
                 print(f"\t\t[-] Unable to find a download link")
                 continue
 
+        download_tracking_value = get_download_tracking_value(item)
         extension = get_url_data(item['url'])['extension']
-        if ((extension in extensions_list or len(extensions_list) == 0) and (item['url'] not in already_downloaded_url)):
+        if ((extension in extensions_list or len(extensions_list) == 0) and (download_tracking_value not in already_downloaded_url)):
             if only_export:
                 write_url_to_list(item['url'], download_path)
             else:
-                download(session, item['url'], download_path, is_bunkr, item['name'])
+                download(session, item['url'], download_path, is_bunkr, item['name'], download_tracking_value)
         
     pagination = soup.find('nav', {'class': 'pagination'})
     if pagination is not None:
@@ -99,10 +111,10 @@ def get_items_list(session, url, extensions, only_export, custom_path=None, is_l
         print(f"\t[+] File list exported in {os.path.join(download_path, 'url_list.txt')}" if only_export else f"\t[+] Download completed")
     return
     
-def get_real_download_url(session, url, is_bunkr=True, item_name=None):
+def get_real_download_url(session, url, is_bunkr=True, item_name=None, download_key=None):
 
     if is_bunkr:
-        url = url if 'https' in url else f'https://bunkr.sk{url}'
+        url = url if 'https' in url else f'https://bunkr.cr{url}'
     else:
         url = url.replace('/f/','/api/f/')
 
@@ -112,14 +124,126 @@ def get_real_download_url(session, url, is_bunkr=True, item_name=None):
         return None
            
     if is_bunkr:
-        slug = unquote(re.search(r'\/f\/(.*?)$', url).group(1))
-        return {'url': decrypt_encrypted_url(get_encryption_data(slug)), 'size': -1, 'name': item_name}
+        # Extract file ID and filename from the file page
+        file_path = None
+        original_filename = extract_bunkr_filename(r.text)
+        cdn_url = extract_bunkr_cdn_url(r.text)
+        
+        print(f"\t\t[DEBUG] Extracted filename: '{original_filename}'")
+        print(f"\t\t[DEBUG] Extracted cdn url: '{cdn_url}'")
+
+        if cdn_url:
+            sign_url = get_signed_download_url(session, cdn_url, r.url)
+            if sign_url:
+                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename or get_url_data(cdn_url)['file_name']), 'download_key': download_key or url}
+        
+        if original_filename:
+            # Construct the file path for the sign API
+            file_path = f"storage/media/{original_filename.replace(' ', '-')}"
+            print(f"\t\t[DEBUG] Trying file_path: {file_path}")
+            # Try with the actual filename format
+            sign_url = get_signed_download_url(session, file_path, r.url)
+            if sign_url:
+                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename), 'download_key': download_key or url}
+            
+            # If that fails, try alternate path format (with spaces)
+            file_path = f"storage/media/{original_filename}"
+            print(f"\t\t[DEBUG] Trying file_path (alt): {file_path}")
+            sign_url = get_signed_download_url(session, file_path, r.url)
+            if sign_url:
+                return {'url': sign_url, 'size': -1, 'name': item_name or remove_illegal_chars(original_filename), 'download_key': download_key or url}
+        
+        # Fallback: try legacy encryption method
+        m_id2 = re.search(r'href="/f/([A-Za-z0-9_-]+)"', r.text)
+        if m_id2:
+            slug = m_id2.group(1)
+            encryption_data = get_encryption_data(slug)
+            if encryption_data is not None:
+                return {'url': decrypt_encrypted_url(encryption_data), 'size': -1, 'name': item_name}
+        
+        print(f"\t\t[-] Unable to extract file info from {r.url}")
+        return None
     else:
         item_data = json.loads(r.content)
-        return {'url': item_data['url'], 'size': -1, 'name': item_data['name']}
+        return {'url': item_data['url'], 'size': -1, 'name': item_data['name'], 'download_key': download_key or url}
+
+def extract_bunkr_filename(html):
+    soup = BeautifulSoup(html, 'html.parser')
+
+    candidates = []
+
+    the_item = soup.find('div', class_='theItem')
+    if the_item:
+        candidates.append(the_item.get('title'))
+
+        the_name = the_item.find('p', class_='theName')
+        if the_name:
+            candidates.append(the_name.get_text(strip=True))
+
+        hidden_p = the_item.find('p', style=re.compile(r'display:\s*none'))
+        if hidden_p:
+            candidates.append(hidden_p.get_text(strip=True))
+
+        thumb_img = the_item.find('img', class_='grid-images_box-img')
+        if thumb_img and thumb_img.get('src'):
+            match = re.search(r'/thumbs/([^"/]+)\.png', thumb_img['src'])
+            if match:
+                candidates.append(f"{match.group(1)}.mp4")
+
+    heading = soup.find('h1')
+    if heading:
+        candidates.append(heading.get_text(strip=True))
+
+    og_title = soup.find('meta', property='og:title')
+    if og_title:
+        candidates.append(og_title.get('content'))
+
+    title = soup.find('title')
+    if title:
+        candidates.append(re.sub(r'\s*\|\s*Bunkr\s*$', '', title.get_text(strip=True)))
+
+    for candidate in candidates:
+        filename = clean_bunkr_filename(candidate)
+        if filename:
+            return filename
+
+    return None
+
+def extract_bunkr_cdn_url(html):
+    match = re.search(r'var\s+jsCDN\s*=\s*"([^"]+)"', html)
+    if match:
+        return decode_bunkr_js_string(match.group(1))
+
+    match = re.search(r'https://[^"\']+\.cdn\.cr/storage/media/[^"\']+', html)
+    if match:
+        return decode_bunkr_js_string(match.group(0))
+
+    return None
+
+def clean_bunkr_filename(value):
+    if not value:
+        return None
+
+    filename = unquote(value).strip()
+    if not filename or re.fullmatch(r'v?\d+(?:\.\d+){1,3}', filename, flags=re.IGNORECASE):
+        return None
+
+    if filename.lower() in ('bunkr', 'version'):
+        return None
+
+    if not os.path.splitext(filename)[1]:
+        return None
+
+    return filename
+
+def decode_bunkr_js_string(value):
+    return json.loads(f'"{value}"')
+
+def get_download_tracking_value(item):
+    return item.get('download_key', item['url'])
         
 @retry(retry=retry_if_exception_type(requests.exceptions.ConnectionError), wait=wait_fixed(2), stop=stop_after_attempt(MAX_RETRIES))
-def download(session, item_url, download_path, is_bunkr=False, file_name=None):
+def download(session, item_url, download_path, is_bunkr=False, file_name=None, download_key=None):
 
     file_name = get_url_data(item_url)['file_name'] if file_name is None else file_name
     if os.path.exists(file_name):
@@ -150,7 +274,7 @@ def download(session, item_url, download_path, is_bunkr=False, file_name=None):
             print(f"\t[-] {file_name} size check failed, file could be broken\n")
             return
 
-    mark_as_downloaded(item_url, download_path)
+    mark_as_downloaded(download_key or item_url, download_path)
 
     return
 
@@ -158,7 +282,7 @@ def create_session():
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-        'Referer': 'https://bunkr.sk/',
+        'Referer': 'https://bunkr.cr/',
     })
     return session
 
@@ -211,14 +335,76 @@ def mark_as_downloaded(item_url, download_path):
 def remove_illegal_chars(string):
     return re.sub(r'[<>:"/\\|?*\']|[\0-\31]', "-", string).strip()
 
+def get_signed_download_url(session, file_path, file_page_url):
+    """
+    Get a signed CDN download URL using the /sign API endpoint.
+    file_path can be a full CDN URL or a path like "storage/media/filename.mp4"
+    """
+    try:
+        if re.match(r'^https?://', file_path):
+            parsed_url = urlparse(file_path)
+            base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+            signed_path = unquote(parsed_url.path)
+        else:
+            signed_path = f"/{file_path.lstrip('/')}"
+            base_url = f"https://glb-cdn.cdn.cr{signed_path}"
+
+        headers = {
+            'Origin': 'https://bunkr.cr',
+            'Referer': file_page_url
+        }
+        r = session.get(BUNKR_SIGN_API_URL, params={'path': signed_path}, headers=headers, timeout=10)
+        if r.status_code != 200:
+            print(f"\t\t[-] HTTP ERROR {r.status_code} getting signed URL")
+            return None
+        
+        data = json.loads(r.content)
+        ex = data.get('ex')
+        token = data.get('token')
+        
+        if ex and token:
+            # Construct the signed CDN URL
+            signed_url = f"{base_url}?ex={ex}&token={token}"
+            return signed_url
+        else:
+            print(f"\t\t[-] Invalid response from sign API: {r.text[:200]}")
+            return None
+    except Exception as e:
+        print(f"\t\t[-] Exception in get_signed_download_url: {e}")
+        return None
+
 def get_encryption_data(slug=None):
 
-    r = session.post(BUNKR_VS_API_URL_FOR_SLUG, json={'slug': slug})
+    payload = {'slug': slug}
+    headers = {
+        'Origin': 'https://bunkr.cr',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': session.headers.get('Referer', 'https://bunkr.cr/')
+    }
+    try:
+        r = session.post(BUNKR_VS_API_URL_FOR_SLUG, json=payload, timeout=10, headers=headers)
+    except Exception as e:
+        print(f"\t\t[-] Exception posting to {BUNKR_VS_API_URL_FOR_SLUG}: {e}")
+        return None
+
+    # Diagnostic logging for debugging API 404s
     if r.status_code != 200:
         print(f"\t\t[-] HTTP ERROR {r.status_code} getting encryption data")
+        try:
+            req_body = r.request.body.decode('utf-8') if r.request.body else ''
+        except Exception:
+            req_body = str(r.request.body)
+        print(f"\t\t    Request payload: {req_body}")
+        print(f"\t\t    Sent headers: {headers}")
+        print(f"\t\t    Response body: {r.text[:1000]}")
         return None
     
-    return json.loads(r.content)
+    try:
+        return json.loads(r.content)
+    except Exception as e:
+        print(f"\t\t[-] Failed to parse encryption data JSON: {e}")
+        print(f"\t\t    Response body: {r.text[:1000]}")
+        return None
 
 def decrypt_encrypted_url(encryption_data):
 
