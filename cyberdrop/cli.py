@@ -23,26 +23,29 @@ def _date(value: str):
 
 
 def _cmd_download(args: argparse.Namespace) -> None:
-    from .download import create_session, _get_items_list
+    from .download import download_all
 
     sys.stdout.reconfigure(encoding="utf-8")
-    session = create_session()
 
-    urls = []
     if args.url:
         urls = [args.url]
     else:
         with open(args.file, "r", encoding="utf-8") as f:
             urls = [line.strip() for line in f if line.strip()]
 
-    for url in urls:
-        print(f"\t[-] Processing {url!r}...")
-        _get_items_list(
-            session, url, args.extensions, args.export_urls,
-            custom_path=args.path,
-            date_before=args.before,
-            date_after=args.after,
-        )
+    results = download_all(
+        urls,
+        extensions=args.extensions,
+        output_dir=args.path or "downloads",
+        export_urls=args.export_urls,
+        date_before=args.before,
+        date_after=args.after,
+    )
+
+    for result in results:
+        if not result.success:
+            for err in result.errors:
+                print(f"\t[-] {err}")
 
 
 def _cmd_bookmarks(args: argparse.Namespace) -> None:
@@ -69,7 +72,7 @@ def _cmd_consolidate(args: argparse.Namespace) -> None:
     from datetime import datetime
     from pathlib import Path
 
-    from .bookmarks_io import load_bookmarks, normalize_bookmarks
+    from .bookmarks import Bookmarks
     from .consolidate import consolidate_from_bookmarks
 
     sys.stdout.reconfigure(encoding="utf-8")
@@ -77,18 +80,13 @@ def _cmd_consolidate(args: argparse.Namespace) -> None:
     if not Path(args.bookmarks).exists():
         print(f"[-] Bookmarks file not found: {args.bookmarks}")
         sys.exit(1)
-    bookmarks = load_bookmarks(args.bookmarks)
-
-    bookmarks = normalize_bookmarks(bookmarks)
+    bookmarks = Bookmarks.load(args.bookmarks)
 
     lower_filter = {c.lower() for c in args.creator} if args.creator else None
     if lower_filter:
-        bookmarks["creators"] = [
-            c for c in bookmarks.get("creators", [])
-            if c.get("name", "").lower() in lower_filter
-        ]
+        bookmarks.creators = [c for c in bookmarks.creators if c.name.lower() in lower_filter]
 
-    creators_with_path = [c for c in bookmarks.get("creators", []) if c.get("consolidation_path")]
+    creators_with_path = [c for c in bookmarks.creators if c.consolidation_path]
     if not creators_with_path:
         msg = (
             f"No creators matching {args.creator} have a consolidation_path"
@@ -98,7 +96,7 @@ def _cmd_consolidate(args: argparse.Namespace) -> None:
         print(f"[-] {msg}")
         sys.exit(1)
 
-    bookmarks["creators"] = creators_with_path
+    bookmarks.creators = creators_with_path
     print(f"[+] Loaded bookmarks from {args.bookmarks}")
     print(f"[+] Consolidating {len(creators_with_path)} creator(s)...\n")
 

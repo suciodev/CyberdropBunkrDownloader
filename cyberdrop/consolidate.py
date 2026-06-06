@@ -8,7 +8,10 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Tuple
+
+if TYPE_CHECKING:
+    from .bookmarks import Bookmarks
 
 
 def _normalize_name(name: str) -> str:
@@ -125,7 +128,7 @@ def consolidate_creator_files(
     return result
 
 
-def consolidate_from_bookmarks(bookmarks: dict, source_base_dir: str = "downloads") -> Dict:
+def consolidate_from_bookmarks(bookmarks: "Bookmarks", source_base_dir: str = "downloads") -> Dict:
     """
     Consolidate files for every creator that has a consolidation_path defined.
     Returns a summary dict.
@@ -133,16 +136,14 @@ def consolidate_from_bookmarks(bookmarks: dict, source_base_dir: str = "download
     consolidations: Dict = {}
     total_ok = 0
 
-    for creator in bookmarks.get("creators", []):
-        name = creator.get("name", "Unknown")
-        dest = creator.get("consolidation_path")
-        if not dest:
+    for creator in bookmarks.creators:
+        if not creator.consolidation_path:
             continue
-        albums = [lnk.get("name") for lnk in creator.get("links", []) if lnk.get("name")]
+        albums = [lnk.name for lnk in creator.links if lnk.name]
         if not albums:
             continue
-        res = consolidate_creator_files(name, albums, source_base_dir, dest)
-        consolidations[name] = res
+        res = consolidate_creator_files(creator.name, albums, source_base_dir, creator.consolidation_path)
+        consolidations[creator.name] = res
         if res["success"]:
             total_ok += 1
 
@@ -156,7 +157,7 @@ def consolidate_from_bookmarks(bookmarks: dict, source_base_dir: str = "download
         lines.append(f"    {name}: {res['message']}")
 
     return {
-        "total_creators": len(bookmarks.get("creators", [])),
+        "total_creators": len(bookmarks.creators),
         "consolidations": consolidations,
         "summary": "\n".join(lines),
     }

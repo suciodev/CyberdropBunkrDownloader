@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 from tqdm import tqdm
 
-from .bookmarks_io import sanitize_filename
+from .tracking import DownloadTracker
 
 BUNKR_VS_API_URL = "https://bunkr.cr/api/vs"
 BUNKR_SIGN_API_URL = "https://glb-apisign.cdn.cr/sign"
@@ -39,8 +39,33 @@ class DownloadResult:
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public entry points
 # ---------------------------------------------------------------------------
+
+def download_all(
+    urls: list[str],
+    extensions: str | None = None,
+    output_dir: str = "downloads",
+    export_urls: bool = False,
+    date_before: datetime | None = None,
+    date_after: datetime | None = None,
+) -> list[DownloadResult]:
+    """Download multiple album URLs, sharing one HTTP session."""
+    session = create_session()
+    results = []
+    for url in urls:
+        print(f"\t[-] Processing {url!r}...")
+        try:
+            folder_path = _get_items_list(
+                session, url, extensions, export_urls, output_dir,
+                date_before=date_before, date_after=date_after,
+            )
+            folder_name = os.path.basename(folder_path) if folder_path else None
+            results.append(DownloadResult(success=True, folder_name=folder_name))
+        except Exception as exc:
+            results.append(DownloadResult(success=False, errors=[str(exc)]))
+    return results
+
 
 def download_album(
     url: str,
@@ -50,25 +75,76 @@ def download_album(
     date_before: datetime | None = None,
     date_after: datetime | None = None,
 ) -> DownloadResult:
-    """
-    Download all files from a Bunkr or Cyberdrop album URL.
-    Returns a DownloadResult with the created folder name on success.
-    """
-    session = create_session()
-    try:
-        folder_path = _get_items_list(
-            session, url, extensions, export_urls, output_dir,
-            date_before=date_before, date_after=date_after,
-        )
-        folder_name = os.path.basename(folder_path) if folder_path else None
-        return DownloadResult(success=True, folder_name=folder_name)
-    except Exception as exc:
-        return DownloadResult(success=False, errors=[str(exc)])
+    """Download all files from a Bunkr or Cyberdrop album URL."""
+    return download_all(
+        [url],
+        extensions=extensions,
+        output_dir=output_dir,
+        export_urls=export_urls,
+        date_before=date_before,
+        date_after=date_after,
+    )[0]
+
+
+# ---------------------------------------------------------------------------
+# Filename sanitisation (used by parsers and by bookmarks_cmd)
+# ---------------------------------------------------------------------------
+
+def sanitize_filename(name: str) -> str:
+    """Remove characters illegal in filenames."""
+    if name is None:
+        return ""
+    return re.sub(r'[<>:"/\\|?*\']|[\0-\x1f]', "-", name).strip()
 
 
 # ---------------------------------------------------------------------------
 # Album page fetching and item dispatch
 # ---------------------------------------------------------------------------
+
+def _parse_bunkr_album_page(
+    soup: BeautifulSoup,
+    url: str,
+    date_before: datetime | None = None,
+    date_after: datetime | None = None,
+) -> tuple[list[dict], str, bool]:
+    """Parse a Bunkr album or file page. Returns (items, album_name, is_direct_link)."""
+    direct_link = (
+        soup.find("span", {"class": "ic-videos"}) is not None
+        or soup.find("div", {"class": "lightgallery"}) is not None
+    )
+
+    if direct_link:
+        album_name_tag = soup.find("h1", {"class": "text-[20px]"}) or soup.find("h1", {"class": "truncate"})
+        album_name = sanitize_filename(album_name_tag.text) if album_name_tag else ""
+        items = []
+        for a in soup.find_all("a", href=re.compile(r"/f/")):
+            href = a.get("href")
+            full_url = urljoin(url, href)
+            title = a.get("title") or (a.text.strip() if a.text else None)
+            items.append({"url": full_url, "size": -1, "name": sanitize_filename(title) if title else None})
+        return items, album_name, True
+
+    items = []
+    for the_item in soup.find_all("div", {"class": "theItem"}):
+        if date_before is not None or date_after is not None:
+            date_span = the_item.find("span", {"class": "ic-clock"})
+            if not _is_date_in_range(date_span.text, date_before, date_after):
+                continue
+        box = the_item.find("a", {"class": "after:absolute"})
+        items.append({"url": box["href"], "size": -1, "name": the_item.find("p").text})
+    album_name = sanitize_filename(soup.find("h1", {"class": "truncate"}).text)
+    return items, album_name, False
+
+
+def _parse_cyberdrop_album_page(soup: BeautifulSoup, url: str) -> tuple[list[dict], str]:
+    """Parse a Cyberdrop album page. Returns (items, album_name)."""
+    items = [
+        {"url": f"https://cyberdrop.me{item_dom['href']}", "size": -1}
+        for item_dom in soup.find_all("a", {"class": "image"})
+    ]
+    album_name = sanitize_filename(soup.find("h1", {"id": "title"}).text)
+    return items, album_name
+
 
 def _get_items_list(
     session: requests.Session,
@@ -79,6 +155,7 @@ def _get_items_list(
     is_last_page: bool = True,
     date_before: datetime | None = None,
     date_after: datetime | None = None,
+    tracker: DownloadTracker | None = None,
 ) -> str | None:
     extensions_list = extensions.split(",") if extensions else []
 
@@ -89,44 +166,19 @@ def _get_items_list(
     soup = BeautifulSoup(r.content, "html.parser")
     is_bunkr = "| Bunkr" in soup.find("title").text
 
-    direct_link = False
-
     if is_bunkr:
-        items = []
-        direct_link = (
-            soup.find("span", {"class": "ic-videos"}) is not None
-            or soup.find("div", {"class": "lightgallery"}) is not None
-        )
-
-        if direct_link:
-            album_name_tag = soup.find("h1", {"class": "text-[20px]"}) or soup.find("h1", {"class": "truncate"})
-            album_name = sanitize_filename(album_name_tag.text)
-            file_links = soup.find_all("a", href=re.compile(r"/f/"))
-            if file_links:
-                for a in file_links:
-                    href = a.get("href")
-                    full_url = urljoin(url, href)
-                    title = a.get("title") or (a.text.strip() if a.text else None)
-                    items.append({"url": full_url, "size": -1, "name": sanitize_filename(title) if title else None})
-            else:
-                items.append(_get_real_download_url(session, url, True))
-        else:
-            for the_item in soup.find_all("div", {"class": "theItem"}):
-                if date_before is not None or date_after is not None:
-                    date_span = the_item.find("span", {"class": "ic-clock"})
-                    if not _is_date_in_range(date_span.text, date_before, date_after):
-                        continue
-                box = the_item.find("a", {"class": "after:absolute"})
-                items.append({"url": box["href"], "size": -1, "name": the_item.find("p").text})
-            album_name = sanitize_filename(soup.find("h1", {"class": "truncate"}).text)
+        items, album_name, direct_link = _parse_bunkr_album_page(soup, url, date_before, date_after)
+        if direct_link and not items:
+            single = _get_real_download_url(session, url, True)
+            if single:
+                items.append(single)
     else:
-        items = []
-        for item_dom in soup.find_all("a", {"class": "image"}):
-            items.append({"url": f"https://cyberdrop.me{item_dom['href']}", "size": -1})
-        album_name = sanitize_filename(soup.find("h1", {"id": "title"}).text)
+        items, album_name = _parse_cyberdrop_album_page(soup, url)
+        direct_link = False
 
     download_path = _prepare_download_path(custom_path, album_name)
-    already_downloaded = _get_already_downloaded(download_path)
+    if tracker is None:
+        tracker = DownloadTracker(download_path)
 
     for item in items:
         if not direct_link:
@@ -137,11 +189,11 @@ def _get_items_list(
 
         tracking_value = _get_tracking_value(item)
         extension = _url_data(item["url"])["extension"]
-        if (extension in extensions_list or not extensions_list) and tracking_value not in already_downloaded:
+        if (extension in extensions_list or not extensions_list) and not tracker.is_downloaded(tracking_value):
             if only_export:
                 _write_url_to_list(item["url"], download_path)
             else:
-                _download_file(session, item["url"], download_path, is_bunkr, item["name"], tracking_value)
+                _download_file(session, item["url"], download_path, is_bunkr, item["name"], tracking_value, tracker)
 
     pagination = soup.find("nav", {"class": "pagination"})
     if pagination is not None:
@@ -162,6 +214,7 @@ def _get_items_list(
                 is_last_page=(current_page + 1 == last_page),
                 date_before=date_before,
                 date_after=date_after,
+                tracker=tracker,
             )
 
     if is_last_page:
@@ -380,6 +433,7 @@ def _download_file(
     is_bunkr: bool = False,
     file_name: str | None = None,
     download_key: str | None = None,
+    tracker: DownloadTracker | None = None,
 ) -> None:
     file_name = file_name or _url_data(item_url)["file_name"]
     if os.path.exists(file_name):
@@ -409,7 +463,11 @@ def _download_file(
             print(f"\t[-] {file_name}: size mismatch — file may be incomplete")
             return
 
-    _mark_downloaded(download_key or item_url, download_path)
+    key = download_key or item_url
+    if tracker is not None:
+        tracker.mark_done(key)
+    else:
+        _mark_downloaded(key, download_path)
 
 
 # ---------------------------------------------------------------------------
@@ -453,24 +511,12 @@ def _prepare_download_path(custom_path: str | None, album_name: str | None) -> s
         path = os.path.join(path, album_name)
     path = path.replace("\n", "")
     os.makedirs(path, exist_ok=True)
-    tracker = os.path.join(path, "already_downloaded.txt")
-    if not os.path.isfile(tracker):
-        open(tracker, "w", encoding="utf-8").close()
+    DownloadTracker(path).ensure_exists()
     return path
 
 
-def _get_already_downloaded(download_path: str) -> list[str]:
-    fp = os.path.join(download_path, "already_downloaded.txt")
-    if not os.path.isfile(fp):
-        return []
-    with open(fp, "r", encoding="utf-8") as f:
-        return f.read().splitlines()
-
-
 def _mark_downloaded(item_url: str, download_path: str) -> None:
-    fp = os.path.join(download_path, "already_downloaded.txt")
-    with open(fp, "a", encoding="utf-8") as f:
-        f.write(f"{item_url}\n")
+    DownloadTracker(download_path).mark_done(item_url)
 
 
 def _write_url_to_list(item_url: str, download_path: str) -> None:

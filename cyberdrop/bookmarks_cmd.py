@@ -9,17 +9,17 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from .bookmarks_io import load_bookmarks, normalize_bookmarks, sanitize_filename, save_bookmarks
+from .bookmarks import Bookmarks
 from .consolidate import consolidate_from_bookmarks
-from .download import download_album
+from .download import download_album, sanitize_filename
+from .tracking import DownloadTracker
 
 
 def is_already_downloaded(url: str, download_path: str = "downloads", link_name: str | None = None) -> bool:
     """Return True if the URL has been tracked in any already_downloaded.txt or a matching folder exists."""
     dl_dir = Path(download_path)
 
-    top_tracker = dl_dir / "already_downloaded.txt"
-    if top_tracker.exists() and url in top_tracker.read_text(encoding="utf-8"):
+    if DownloadTracker(dl_dir).is_downloaded(url):
         return True
 
     if not dl_dir.exists():
@@ -35,8 +35,7 @@ def is_already_downloaded(url: str, download_path: str = "downloads", link_name:
                 if candidate.exists() and any(candidate.iterdir()):
                     return True
 
-        tracker = sub / "already_downloaded.txt"
-        if tracker.exists() and url in tracker.read_text(encoding="utf-8"):
+        if DownloadTracker(sub).is_downloaded(url):
             return True
 
         if any(f.name == basename for f in sub.iterdir() if f.is_file()):
@@ -57,69 +56,63 @@ def run_bookmarks(
     if not Path(bookmarks_path).exists():
         print(f"[-] Bookmarks file not found: {bookmarks_path}")
         sys.exit(1)
-    bookmarks = load_bookmarks(bookmarks_path)
+    bookmarks = Bookmarks.load(bookmarks_path)
 
-    bookmarks = normalize_bookmarks(bookmarks)
     print(f"[+] Loaded bookmarks from {bookmarks_path}")
     print(f"[+] Starting batch download at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-    creators = bookmarks.get("creators", [])
     lower_filter = {c.lower() for c in creators_filter} if creators_filter else None
     downloaded_count = skipped_count = 0
 
-    for creator in creators:
-        creator_name = creator.get("name", "Unknown")
-        if lower_filter and creator_name.lower() not in lower_filter:
+    for creator in bookmarks.creators:
+        if lower_filter and creator.name.lower() not in lower_filter:
             continue
 
-        links = creator.get("links", [])
-        if not links:
+        if not creator.links:
             continue
 
-        print(f"[*] Creator: {creator_name}")
+        print(f"[*] Creator: {creator.name}")
 
-        for link in links:
-            url = link.get("url")
-            link_name = link.get("name", "Unknown")
-
-            if not url:
-                print(f"  [-] No URL for {link_name!r}")
+        for link in creator.links:
+            if not link.url:
+                print(f"  [-] No URL for {link.name!r}")
                 continue
 
-            if skip_downloaded and link.get("downloaded"):
-                print(f"  [~] Already downloaded (bookmarks flag): {link_name}")
+            if skip_downloaded and link.downloaded:
+                print(f"  [~] Already downloaded (bookmarks flag): {link.name}")
                 skipped_count += 1
                 continue
 
-            if skip_downloaded and is_already_downloaded(url, output_dir, link_name):
-                print(f"  [~] Already downloaded (filesystem): {link_name}")
-                link["downloaded"] = True
+            if skip_downloaded and is_already_downloaded(link.url, output_dir, link.name):
+                print(f"  [~] Already downloaded (filesystem): {link.name}")
+                link.downloaded = True
                 skipped_count += 1
                 continue
 
-            print(f"  Downloading: {url}")
-            result = download_album(url, extensions=extensions, output_dir=output_dir)
+            print(f"  Downloading: {link.url}")
+            result = download_album(link.url, extensions=extensions, output_dir=output_dir)
 
             if result.success:
-                link["downloaded"] = True
+                link.downloaded = True
                 downloaded_count += 1
                 if result.folder_name and (
-                    link_name.startswith("Link ") or link_name.startswith(f"{creator_name} ")
+                    link.name.startswith("Link ") or link.name.startswith(f"{creator.name} ")
                 ):
-                    link["name"] = result.folder_name
-                    print(f"    [+] Renamed {link_name!r} → {result.folder_name!r}")
+                    old_name = link.name
+                    link.name = result.folder_name
+                    print(f"    [+] Renamed {old_name!r} → {result.folder_name!r}")
             else:
-                link["downloaded"] = False
+                link.downloaded = False
                 for err in result.errors:
                     print(f"    [-] {err}")
 
         print()
 
     if not no_update:
-        save_bookmarks(bookmarks_path, bookmarks)
+        bookmarks.save(bookmarks_path)
         print(f"[+] Updated {bookmarks_path}")
 
-    total = sum(len(c.get("links", [])) for c in creators)
+    total = sum(len(c.links) for c in bookmarks.creators)
     print(f"\n[+] Batch download complete")
     print(f"    Total: {total} | Downloaded: {downloaded_count} | Skipped: {skipped_count}")
     print(f"    Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
