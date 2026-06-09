@@ -103,3 +103,24 @@ creators:
   helps the fuzzy match find the right folder automatically.
 - Both `bunkr.cr/a/…` (album), `bunkr.cr/f/…` (single file), and `cyberdrop.me/a/…` URLs work.
 - Minimal format: links can be plain URL strings instead of dicts — they'll be normalised automatically.
+
+## Examples
+
+`run_example.sh` contains ready-to-run examples for every command. Edit the URLs and creator
+names at the top, then:
+
+```bash
+bash run_example.sh
+```
+
+## Development
+
+```bash
+# Install dev dependencies (includes pytest)
+uv sync --group dev
+
+# Run the test suite
+uv run pytest
+```
+
+Domain model and module responsibilities are documented in `CONTEXT.md`.
