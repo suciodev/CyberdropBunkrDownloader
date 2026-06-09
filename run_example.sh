@@ -1,42 +1,92 @@
 #!/usr/bin/env bash
-# Example commands — replace URLs and creator names with your own.
+# run_example.sh — hands-on tour of every cyberdrop command.
+#
+# Edit the values in the CONFIGURATION section below, then run:
+#   bash run_example.sh
+#
+# Requires: uv (https://docs.astral.sh/uv/)
+# Install deps first if you haven't: uv sync
 
-# Download a single album
-uv run cyberdrop download -u https://bunkr.cr/a/kRupjUVJ
+set -euo pipefail
 
-# Download all bookmarks
+# ─────────────────────────────────────────────
+# CONFIGURATION — edit these before running
+# ─────────────────────────────────────────────
+BUNKR_ALBUM="https://bunkr.cr/a/XXXXXXXX"          # a real bunkr album URL
+CYBERDROP_ALBUM="https://cyberdrop.me/a/YYYYYYYY"  # a real cyberdrop album URL
+CREATOR_NAME="ExampleCreator"                       # must match a name in bookmarks.yml
+DOWNLOADS_DIR="./downloads"
+# ─────────────────────────────────────────────
+
+echo "=== 1. Download a single Bunkr album ==="
+uv run cyberdrop download -u "$BUNKR_ALBUM"
+
+echo
+echo "=== 2. Download a single Cyberdrop album ==="
+uv run cyberdrop download -u "$CYBERDROP_ALBUM"
+
+echo
+echo "=== 3. Download only images from an album ==="
+uv run cyberdrop download -u "$BUNKR_ALBUM" -e jpg,png,webp
+
+echo
+echo "=== 4. Download to a custom output directory ==="
+uv run cyberdrop download -u "$BUNKR_ALBUM" -p ./my_downloads
+
+echo
+echo "=== 5. Export URL list instead of downloading (for wget/aria2c) ==="
+uv run cyberdrop download -u "$BUNKR_ALBUM" -w
+
+echo
+echo "=== 6. Download only files uploaded before a date ==="
+uv run cyberdrop download -u "$BUNKR_ALBUM" --before 2025-01-01T00:00:00
+
+echo
+echo "=== 7. Batch-download everything in bookmarks.yml ==="
 uv run cyberdrop bookmarks
 
-# Download specific creator(s)
-uv run cyberdrop bookmarks -c Creator1
+echo
+echo "=== 8. Download a specific creator only ==="
+uv run cyberdrop bookmarks -c "$CREATOR_NAME"
 
-# Skip already-downloaded files
+echo
+echo "=== 9. Download multiple creators ==="
+uv run cyberdrop bookmarks -c "$CREATOR_NAME" AnotherCreator
+
+echo
+echo "=== 10. Skip albums already marked as downloaded ==="
 uv run cyberdrop bookmarks --skip-downloaded
 
-# Filter by file extensions
-uv run cyberdrop bookmarks -e jpg,png,mp4
+echo
+echo "=== 11. Filter by extension across all bookmarks ==="
+uv run cyberdrop bookmarks -e mp4,mov
 
-# Custom output directory
-uv run cyberdrop bookmarks -o ./my_downloads
-
-# Preview without updating bookmarks.yml
+echo
+echo "=== 12. Preview run — don't update bookmarks.yml with status ==="
 uv run cyberdrop bookmarks --no-update
 
-# Import URLs for a creator (paste URLs, then press Ctrl+Z+Enter on Windows or Ctrl+D on Mac/Linux)
-uv run cyberdrop import -c "Creator2"
-# Paste: https://bunkr.cr/a/url1
-#        https://bunkr.cr/a/url2
-#        https://bunkr.cr/a/url3
-# → Adds 3 links as "Creator2 1", "Creator2 2", "Creator2 3"
+echo
+echo "=== 13. Download + move files to consolidation_path in one step ==="
+uv run cyberdrop bookmarks -c "$CREATOR_NAME" --consolidate
 
-# Download creator and consolidate to consolidation_path from bookmarks.yml
-uv run cyberdrop bookmarks -c "Creator2" --consolidate
+echo
+echo "=== 14. Import URLs from stdin into bookmarks.yml ==="
+echo "    Paste URLs one per line, then Ctrl+D (Mac/Linux) or Ctrl+Z+Enter (Windows)"
+echo "    Example (pipe-mode — skip if running interactively):"
+printf '%s\n%s\n' "$BUNKR_ALBUM" "$CYBERDROP_ALBUM" | uv run cyberdrop import -c "$CREATOR_NAME"
 
-# Move already-downloaded files to consolidation paths (no re-download)
+echo
+echo "=== 15. Move already-downloaded files to consolidation paths ==="
+echo "    (no re-download; consolidation_path must be set in bookmarks.yml)"
 uv run cyberdrop consolidate
 
-# Consolidate specific creators only
-uv run cyberdrop consolidate -c Creator1 Creator3
+echo
+echo "=== 16. Consolidate specific creators only ==="
+uv run cyberdrop consolidate -c "$CREATOR_NAME"
 
-# Download and consolidate multiple creators
-uv run cyberdrop bookmarks -c Creator1 Creator2 Creator3 --consolidate
+echo
+echo "=== 17. Consolidate from a non-default staging directory ==="
+uv run cyberdrop consolidate -o "$DOWNLOADS_DIR"
+
+echo
+echo "Done."
