@@ -1,0 +1,55 @@
+# bookmarks.example.yml — copy to bookmarks.yml and fill in your own entries.
+# bookmarks.yml is gitignored so your personal links never end up in version control.
+#
+# USAGE
+#   cyberdrop bookmarks                        # download everything not yet downloaded
+#   cyberdrop bookmarks -c Creator1 Creator2   # specific creator(s) only
+#   cyberdrop bookmarks --skip-downloaded      # skip anything already marked downloaded
+#   cyberdrop bookmarks --consolidate          # download + move files to consolidation_path
+#   cyberdrop import -c CreatorName            # add URLs for a creator (reads stdin)
+#   cyberdrop consolidate                      # move already-downloaded files (no re-download)
+#   cyberdrop download -u URL                  # download a single album directly
+
+creators:
+  - name: ExampleCreator
+
+    # Optional. When set, files are moved here after downloading (consolidation).
+    # Leave blank or omit to keep files in the downloads/ staging folder.
+    # Works with both `cyberdrop bookmarks --consolidate` and `cyberdrop consolidate`.
+    consolidation_path: /path/to/ExampleCreator
+
+    links:
+      # Each link is a Bunkr album/file URL or a cyberdrop.me album URL.
+      #
+      # 'name' matters for consolidation: it doubles as the folder name for fuzzy
+      # matching. If you used `cyberdrop import`, names are auto-generated as
+      # "CreatorName 1", "CreatorName 2", etc. — safe to rename by hand.
+      #
+      # 'downloaded' is updated automatically by `cyberdrop bookmarks`.
+      # Set it back to false to re-download an album.
+      - name: "ExampleCreator Pack 1"
+        url: https://bunkr.cr/a/XXXXXXXX
+        downloaded: false
+
+      - name: "ExampleCreator Pack 2"
+        url: https://cyberdrop.me/a/YYYYYYYY
+        downloaded: false
+
+      # Single-file URLs work too (bunkr.cr/f/... links):
+      - name: "ExampleCreator Single File"
+        url: https://bunkr.cr/f/ZZZZZZZZ
+        downloaded: false
+
+  # Creator without a consolidation_path: files stay in downloads/ subfolders.
+  - name: AnotherCreator
+    links:
+      - name: "Some Album"
+        url: https://bunkr.cr/a/AAAAAAAA
+        downloaded: false
+
+  # Minimal format — just URLs as strings, no name or downloaded flag needed.
+  # `cyberdrop bookmarks` normalises these automatically.
+  - name: MinimalCreator
+    links:
+      - https://bunkr.cr/a/BBBBBBBB
+      - https://bunkr.cr/a/CCCCCCCC
