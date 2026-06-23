@@ -19,7 +19,7 @@ class DownloadTracker:
     def is_downloaded(self, key: str) -> bool:
         if not self._path.exists():
             return False
-        return key in self._path.read_text(encoding="utf-8")
+        return key in set(self._path.read_text(encoding="utf-8").splitlines())
 
     def mark_done(self, key: str) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
