@@ -7,8 +7,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from base64 import b64decode
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from math import floor
@@ -16,6 +18,7 @@ from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 from tqdm import tqdm
 
@@ -25,6 +28,10 @@ BUNKR_VS_API_URL = "https://bunkr.cr/api/vs"
 BUNKR_SIGN_API_URL = "https://glb-apisign.cdn.cr/sign"
 SECRET_KEY_BASE = "SECRET_KEY_"
 MAX_RETRIES = 10
+
+# Serialises the existence-check + filename assignment so concurrent workers
+# cannot both observe the same path as absent and write to it simultaneously.
+_path_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -49,16 +56,17 @@ def download_all(
     export_urls: bool = False,
     date_before: datetime | None = None,
     date_after: datetime | None = None,
+    workers: int = 4,
 ) -> list[DownloadResult]:
     """Download multiple album URLs, sharing one HTTP session."""
-    session = create_session()
+    session = create_session(workers=workers)
     results = []
     for url in urls:
         print(f"\t[-] Processing {url!r}...")
         try:
             folder_path = _get_items_list(
                 session, url, extensions, export_urls, output_dir,
-                date_before=date_before, date_after=date_after,
+                date_before=date_before, date_after=date_after, workers=workers,
             )
             folder_name = os.path.basename(folder_path) if folder_path else None
             results.append(DownloadResult(success=True, folder_name=folder_name))
@@ -74,6 +82,7 @@ def download_album(
     export_urls: bool = False,
     date_before: datetime | None = None,
     date_after: datetime | None = None,
+    workers: int = 4,
 ) -> DownloadResult:
     """Download all files from a Bunkr or Cyberdrop album URL."""
     return download_all(
@@ -83,6 +92,7 @@ def download_album(
         export_urls=export_urls,
         date_before=date_before,
         date_after=date_after,
+        workers=workers,
     )[0]
 
 
@@ -155,10 +165,13 @@ def _get_items_list(
     date_before: datetime | None = None,
     date_after: datetime | None = None,
     tracker: DownloadTracker | None = None,
+    workers: int = 4,
 ) -> str | None:
     extensions_list = extensions.split(",") if extensions else []
     download_path: str | None = None
+    is_bunkr: bool = False
     current_url = url
+    pending: list[dict] = []
 
     while True:
         r = session.get(current_url)
@@ -196,7 +209,7 @@ def _get_items_list(
                 if only_export:
                     _write_url_to_list(item["url"], download_path)
                 else:
-                    _download_file(session, item["url"], download_path, is_bunkr, item["name"], tracking_value, tracker)
+                    pending.append(item)
 
         pagination = soup.find("nav", {"class": "pagination"})
         if pagination is None:
@@ -215,6 +228,22 @@ def _get_items_list(
         else:
             sep = "&" if "?" in current_url else "?"
             current_url = f"{current_url}{sep}page={current_page + 1}"
+
+    if pending:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(
+                    _download_file,
+                    session, item["url"], download_path, is_bunkr,
+                    item["name"], _get_tracking_value(item), tracker,
+                ): item
+                for item in pending
+            }
+            for f in as_completed(futs):
+                try:
+                    f.result()
+                except Exception as exc:
+                    print(f"\t[-] Download error: {exc}")
 
     if only_export:
         print(f"\t[+] URL list exported to {os.path.join(download_path, 'url_list.txt')}")
@@ -419,6 +448,16 @@ def _decode_js_string(value: str) -> str:
 # File download
 # ---------------------------------------------------------------------------
 
+def _reserve_final_path(download_path: str, file_name: str) -> tuple[str, str]:
+    """Return (file_name, final_path), renaming with a timestamp if the path is taken."""
+    with _path_lock:
+        final_path = os.path.join(download_path, file_name)
+        if os.path.exists(final_path):
+            file_name = f"{int(time.time())}_{file_name}"
+            final_path = os.path.join(download_path, file_name)
+    return file_name, final_path
+
+
 @retry(
     retry=retry_if_exception_type(requests.exceptions.ConnectionError),
     wait=wait_fixed(2),
@@ -434,12 +473,9 @@ def _download_file(
     tracker: DownloadTracker | None = None,
 ) -> None:
     file_name = file_name or _url_data(item_url)["file_name"]
-    final_path = os.path.join(download_path, file_name)
-    if os.path.exists(final_path):
-        file_name = f"{int(time.time())}_{file_name}"
-        final_path = os.path.join(download_path, file_name)
+    file_name, final_path = _reserve_final_path(download_path, file_name)
 
-    with session.get(item_url, stream=True, timeout=5) as r:
+    with session.get(item_url, stream=True, timeout=(10, 60)) as r:
         print(f"\t[+] Downloading {item_url} ({file_name})")
         if r.status_code != 200:
             print(f"\t\t[-] Error {r.status_code} downloading {file_name!r}")
@@ -472,8 +508,11 @@ def _download_file(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def create_session() -> requests.Session:
+def create_session(workers: int = 4) -> requests.Session:
     s = requests.Session()
+    adapter = HTTPAdapter(pool_connections=workers, pool_maxsize=workers)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
     s.headers.update(
         {
             "User-Agent": (
