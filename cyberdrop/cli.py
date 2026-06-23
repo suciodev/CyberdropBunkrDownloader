@@ -40,6 +40,7 @@ def _cmd_download(args: argparse.Namespace) -> None:
         export_urls=args.export_urls,
         date_before=args.before,
         date_after=args.after,
+        workers=args.workers,
     )
 
     for result in results:
@@ -136,6 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     dl.add_argument("-w", "--export-urls", action="store_true", help="Write URL list instead of downloading")
     dl.add_argument("--before", type=_date, metavar="YYYY-MM-DDTHH:MM:SS", help="Only files uploaded before this date")
     dl.add_argument("--after", type=_date, metavar="YYYY-MM-DDTHH:MM:SS", help="Only files uploaded after this date")
+    dl.add_argument("--workers", type=int, default=4, metavar="N", help="Parallel download workers (default: 4)")
     dl.set_defaults(func=_cmd_download)
 
     # ---- bookmarks ----
