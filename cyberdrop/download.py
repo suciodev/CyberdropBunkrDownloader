@@ -152,76 +152,74 @@ def _get_items_list(
     extensions: str | None,
     only_export: bool,
     custom_path: str | None = None,
-    is_last_page: bool = True,
     date_before: datetime | None = None,
     date_after: datetime | None = None,
     tracker: DownloadTracker | None = None,
 ) -> str | None:
     extensions_list = extensions.split(",") if extensions else []
+    download_path: str | None = None
+    current_url = url
 
-    r = session.get(url)
-    if r.status_code != 200:
-        raise Exception(f"HTTP error {r.status_code} fetching {url}")
+    while True:
+        r = session.get(current_url)
+        if r.status_code != 200:
+            raise Exception(f"HTTP error {r.status_code} fetching {current_url}")
 
-    soup = BeautifulSoup(r.content, "html.parser")
-    is_bunkr = "| Bunkr" in soup.find("title").text
+        soup = BeautifulSoup(r.content, "html.parser")
+        is_bunkr = "| Bunkr" in soup.find("title").text
 
-    if is_bunkr:
-        items, album_name, direct_link = _parse_bunkr_album_page(soup, url, date_before, date_after)
-        if direct_link and not items:
-            single = _get_real_download_url(session, url, True)
-            if single:
-                items.append(single)
-    else:
-        items, album_name = _parse_cyberdrop_album_page(soup, url)
-        direct_link = False
+        if is_bunkr:
+            items, album_name, direct_link = _parse_bunkr_album_page(soup, current_url, date_before, date_after)
+            if direct_link and not items:
+                single = _get_real_download_url(session, current_url, True)
+                if single:
+                    items.append(single)
+        else:
+            items, album_name = _parse_cyberdrop_album_page(soup, current_url)
+            direct_link = False
 
-    download_path = _prepare_download_path(custom_path, album_name)
-    if tracker is None:
-        tracker = DownloadTracker(download_path)
+        if download_path is None:
+            download_path = _prepare_download_path(custom_path, album_name)
+        if tracker is None:
+            tracker = DownloadTracker(download_path)
 
-    for item in items:
-        if not direct_link:
-            item = _get_real_download_url(session, item["url"], is_bunkr, item["name"], item["url"])
-            if item is None:
-                print("\t\t[-] Unable to find a download link")
-                continue
+        for item in items:
+            if not direct_link:
+                item = _get_real_download_url(session, item["url"], is_bunkr, item["name"], item["url"])
+                if item is None:
+                    print("\t\t[-] Unable to find a download link")
+                    continue
 
-        tracking_value = _get_tracking_value(item)
-        extension = _url_data(item["url"])["extension"]
-        if (extension in extensions_list or not extensions_list) and not tracker.is_downloaded(tracking_value):
-            if only_export:
-                _write_url_to_list(item["url"], download_path)
-            else:
-                _download_file(session, item["url"], download_path, is_bunkr, item["name"], tracking_value, tracker)
+            tracking_value = _get_tracking_value(item)
+            extension = _url_data(item["url"])["extension"]
+            if (extension in extensions_list or not extensions_list) and not tracker.is_downloaded(tracking_value):
+                if only_export:
+                    _write_url_to_list(item["url"], download_path)
+                else:
+                    _download_file(session, item["url"], download_path, is_bunkr, item["name"], tracking_value, tracker)
 
-    pagination = soup.find("nav", {"class": "pagination"})
-    if pagination is not None:
+        pagination = soup.find("nav", {"class": "pagination"})
+        if pagination is None:
+            break
+
         current_page = int(pagination.find("span", {"class": "active"}).text)
         page_links = [a for a in pagination.find_all("a") if a.text.strip().isdigit()]
         last_page = int(page_links[-1].text) if page_links else current_page
 
-        if current_page < last_page:
-            print(f"[!] Downloading page ({current_page + 1}/{last_page})")
-            if re.search(r"([?&])page=\d+", url):
-                url_next = re.sub(r"([?&])page=\d+", rf"\1page={current_page + 1}", url)
-            else:
-                sep = "&" if "?" in url else "?"
-                url_next = f"{url}{sep}page={current_page + 1}"
-            _get_items_list(
-                session, url_next, extensions, only_export,
-                custom_path=custom_path,
-                is_last_page=(current_page + 1 == last_page),
-                date_before=date_before,
-                date_after=date_after,
-                tracker=tracker,
-            )
+        if current_page >= last_page:
+            break
 
-    if is_last_page:
-        if only_export:
-            print(f"\t[+] URL list exported to {os.path.join(download_path, 'url_list.txt')}")
+        print(f"[!] Downloading page ({current_page + 1}/{last_page})")
+        if re.search(r"([?&])page=\d+", current_url):
+            current_url = re.sub(r"([?&])page=\d+", rf"\1page={current_page + 1}", current_url)
         else:
-            print("\t[+] Download completed")
+            sep = "&" if "?" in current_url else "?"
+            current_url = f"{current_url}{sep}page={current_page + 1}"
+
+    if only_export:
+        print(f"\t[+] URL list exported to {os.path.join(download_path, 'url_list.txt')}")
+    else:
+        print("\t[+] Download completed")
 
     return download_path
 
@@ -436,10 +434,10 @@ def _download_file(
     tracker: DownloadTracker | None = None,
 ) -> None:
     file_name = file_name or _url_data(item_url)["file_name"]
-    if os.path.exists(file_name):
-        file_name = f"{int(time.time())}_{file_name}"
-
     final_path = os.path.join(download_path, file_name)
+    if os.path.exists(final_path):
+        file_name = f"{int(time.time())}_{file_name}"
+        final_path = os.path.join(download_path, file_name)
 
     with session.get(item_url, stream=True, timeout=5) as r:
         print(f"\t[+] Downloading {item_url} ({file_name})")
